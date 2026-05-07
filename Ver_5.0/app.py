@@ -242,29 +242,29 @@ def api_attendance():
 
 
 # 👥 Get Users
-@app.route("/api/attendance", methods=["GET"])
-def api_attendance():
+@app.route("/api/users", methods=["GET"])
+def api_users():
     page = int(request.args.get("page", 1))
     limit = int(request.args.get("limit", 10))
 
-    user_id = request.args.get("user_id")
-    date = request.args.get("date")
+    search = request.args.get("search", "")   # name ya id search
+    status = request.args.get("status", "")   # active/inactive
 
     offset = (page - 1) * limit
 
-    # 🔥 BASE QUERY (NO pagination yet)
-    base_query = "FROM attendance WHERE 1=1"
+    # 🔥 BASE QUERY
+    base_query = "FROM users WHERE 1=1"
     params = []
 
-    # 👤 Filter by employee id
-    if user_id:
-        base_query += " AND user_id = ?"
-        params.append(user_id)
+    # 🔍 Search by name or user_id
+    if search:
+        base_query += " AND (name LIKE ? OR user_id LIKE ?)"
+        params.extend([f"%{search}%", f"%{search}%"])
 
-    # 📅 Filter by date
-    if date:
-        base_query += " AND date = ?"
-        params.append(date)
+    # 🟢 Filter by status
+    if status:
+        base_query += " AND status = ?"
+        params.append(status)
 
     # 🔢 TOTAL (filtered count)
     cursor.execute(f"SELECT COUNT(*) {base_query}", params)
@@ -272,32 +272,30 @@ def api_attendance():
 
     # 📄 FINAL DATA (filtered + paginated)
     final_query = f"""
-        SELECT user_id, name, date, time 
+        SELECT user_id, name, status
         {base_query}
-        ORDER BY id DESC
+        ORDER BY user_id DESC
         LIMIT ? OFFSET ?
     """
 
     cursor.execute(final_query, params + [limit, offset])
     rows = cursor.fetchall()
 
-    data = []
+    users = []
     for r in rows:
-        data.append({
+        users.append({
             "user_id": r[0],
             "name": r[1],
-            "date": r[2],
-            "time": r[3]
+            "status": r[2]
         })
 
     return jsonify({
         "page": page,
         "limit": limit,
-        "total": total,               # filtered total
+        "total": total,
         "total_pages": (total + limit - 1) // limit,
-        "data": data
+        "data": users
     })
-
 # ➕ Add User
 @app.route("/api/users", methods=["POST"])
 def add_user():
