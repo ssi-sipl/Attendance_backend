@@ -189,20 +189,38 @@ def api_attendance():
     page = int(request.args.get("page", 1))
     limit = int(request.args.get("limit", 10))
 
+    user_id = request.args.get("user_id")
+    date = request.args.get("date")
+
     offset = (page - 1) * limit
 
-    # total count (for frontend pagination)
-    cursor.execute("SELECT COUNT(*) FROM attendance")
+    # 🔥 BASE QUERY (NO pagination yet)
+    base_query = "FROM attendance WHERE 1=1"
+    params = []
+
+    # 👤 Filter by employee id
+    if user_id:
+        base_query += " AND user_id = ?"
+        params.append(user_id)
+
+    # 📅 Filter by date
+    if date:
+        base_query += " AND date = ?"
+        params.append(date)
+
+    # 🔢 TOTAL (filtered count)
+    cursor.execute(f"SELECT COUNT(*) {base_query}", params)
     total = cursor.fetchone()[0]
 
-    # paginated data
-    cursor.execute("""
+    # 📄 FINAL DATA (filtered + paginated)
+    final_query = f"""
         SELECT user_id, name, date, time 
-        FROM attendance 
-        ORDER BY id DESC 
+        {base_query}
+        ORDER BY id DESC
         LIMIT ? OFFSET ?
-    """, (limit, offset))
+    """
 
+    cursor.execute(final_query, params + [limit, offset])
     rows = cursor.fetchall()
 
     data = []
@@ -217,50 +235,68 @@ def api_attendance():
     return jsonify({
         "page": page,
         "limit": limit,
-        "total": total,
+        "total": total,               # filtered total
         "total_pages": (total + limit - 1) // limit,
         "data": data
     })
 
 
 # 👥 Get Users
-@app.route("/api/users", methods=["GET"])
-def api_users():
+@app.route("/api/attendance", methods=["GET"])
+def api_attendance():
     page = int(request.args.get("page", 1))
     limit = int(request.args.get("limit", 10))
 
+    user_id = request.args.get("user_id")
+    date = request.args.get("date")
+
     offset = (page - 1) * limit
 
-    # total users count
-    cursor.execute("SELECT COUNT(*) FROM users")
+    # 🔥 BASE QUERY (NO pagination yet)
+    base_query = "FROM attendance WHERE 1=1"
+    params = []
+
+    # 👤 Filter by employee id
+    if user_id:
+        base_query += " AND user_id = ?"
+        params.append(user_id)
+
+    # 📅 Filter by date
+    if date:
+        base_query += " AND date = ?"
+        params.append(date)
+
+    # 🔢 TOTAL (filtered count)
+    cursor.execute(f"SELECT COUNT(*) {base_query}", params)
     total = cursor.fetchone()[0]
 
-    # paginated users
-    cursor.execute("""
-        SELECT user_id, name, status 
-        FROM users 
-        ORDER BY user_id DESC 
+    # 📄 FINAL DATA (filtered + paginated)
+    final_query = f"""
+        SELECT user_id, name, date, time 
+        {base_query}
+        ORDER BY id DESC
         LIMIT ? OFFSET ?
-    """, (limit, offset))
+    """
 
+    cursor.execute(final_query, params + [limit, offset])
     rows = cursor.fetchall()
 
-    users = []
+    data = []
     for r in rows:
-        users.append({
+        data.append({
             "user_id": r[0],
             "name": r[1],
-            "status": r[2]
+            "date": r[2],
+            "time": r[3]
         })
 
     return jsonify({
         "page": page,
         "limit": limit,
-        "total": total,
+        "total": total,               # filtered total
         "total_pages": (total + limit - 1) // limit,
-        "data": users
+        "data": data
     })
-
 
 # ➕ Add User
 @app.route("/api/users", methods=["POST"])
