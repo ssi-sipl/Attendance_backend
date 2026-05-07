@@ -4,10 +4,15 @@ from datetime import datetime
 
 from flask import Flask, render_template, redirect, request, session, jsonify
 from flask_socketio import SocketIO, emit
+from flask_cors import CORS
 from pyfingerprint.pyfingerprint import PyFingerprint
 
 app = Flask(__name__)
 app.secret_key = "supersecret"
+
+# ✅ Enable CORS for Next.js
+CORS(app)
+
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 # ---------------- DB ----------------
@@ -122,18 +127,18 @@ def mark_attendance(fid):
 
     user = cursor.fetchone()
     if not user:
-        return "User not found"
+        return {"error": "User not found"}
 
     uid, name, status = user
 
     if status != "active":
-        return "User inactive"
+        return {"error": "User inactive"}
 
     today = datetime.now().strftime("%Y-%m-%d")
 
     cursor.execute("SELECT * FROM attendance WHERE user_id=? AND date=?", (uid, today))
     if cursor.fetchone():
-        return "Already marked"
+        return {"message": "Already marked"}
 
     now = datetime.now().strftime("%H:%M:%S")
 
@@ -145,44 +150,23 @@ def mark_attendance(fid):
     conn.commit()
     socketio.emit("new_attendance")
 
-    return f"Welcome {name}"
+    return {
+        "message": f"Welcome {name}",
+        "user_id": uid,
+        "name": name,
+        "time": now
+    }
 
-# ---------------- ROUTES ----------------
+# ---------------- API ROUTES ----------------
 
-@app.route("/", methods=["GET", "POST"])
-def login():
-    if request.method == "POST":
-        if request.form.get("password") == ADMIN_PASSWORD:
-            session["admin"] = True
-            return redirect("/dashboard")
-    return render_template("login.html")
-
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect("/")
-
-@app.route("/dashboard")
-def dashboard():
-    if not session.get("admin"):
-        return redirect("/")
-    return render_template("dashboard.html")
-
-@app.route("/live")
-def live():
-    cursor.execute("SELECT * FROM attendance ORDER BY id DESC")
-    return jsonify(cursor.fetchall())
-
-# 🔥 FIXED SCAN
-@app.route("/scan", methods=["GET"])
-@app.route("/scan/", methods=["GET"])
-def scan():
+# 🔥 Scan Fingerprint
+@app.route("/api/scan", methods=["GET"])
+def api_scan():
     f = get_sensor()
     if not f:
-        return "Sensor not found"
+        return jsonify({"error": "Sensor not found"}), 500
 
     try:
-        print("Waiting for finger...")
         while not f.readImage():
             pass
 
@@ -190,57 +174,69 @@ def scan():
         fid = f.searchTemplate()[0]
 
         if fid < 0:
-            return "Fingerprint not found"
+            return jsonify({"error": "Fingerprint not found"}), 404
 
-        return mark_attendance(fid)
+        result = mark_attendance(fid)
+        return jsonify(result)
 
     except Exception as e:
-        return str(e)
+        return jsonify({"error": str(e)}), 500
 
-# ---------------- SETTINGS ----------------
-@app.route("/settings", methods=["GET", "POST"])
-def settings():
-    if not session.get("admin"):
-        return redirect("/")
 
-    if request.method == "POST":
-        action = request.form.get("action")
-        uid = request.form.get("user_id")
-        name = request.form.get("name")
+# 📊 Get Attendance
+@app.route("/api/attendance", methods=["GET"])
+def api_attendance():
+    cursor.execute("SELECT user_id, name, date, time FROM attendance ORDER BY id DESC")
+    rows = cursor.fetchall()
 
-        if action == "add":
-            try:
-                cursor.execute("INSERT INTO users (name) VALUES (?)", (name,))
-            except:
-                pass
+    data = []
+    for r in rows:
+        data.append({
+            "user_id": r[0],
+            "name": r[1],
+            "date": r[2],
+            "time": r[3]
+        })
 
-        elif action == "activate":
-            cursor.execute("UPDATE users SET status='active' WHERE user_id=?", (uid,))
+    return jsonify(data)
 
-        elif action == "deactivate":
-            cursor.execute("UPDATE users SET status='inactive' WHERE user_id=?", (uid,))
 
-        elif action == "enroll":
-            print(enroll_fingerprint(int(uid)))
+# 👥 Get Users
+@app.route("/api/users", methods=["GET"])
+def api_users():
+    cursor.execute("SELECT user_id, name, status FROM users")
+    rows = cursor.fetchall()
 
-        elif action == "delete_all":
-            delete_all(uid)
+    users = []
+    for r in rows:
+        users.append({
+            "user_id": r[0],
+            "name": r[1],
+            "status": r[2]
+        })
 
+    return jsonify(users)
+
+
+# ➕ Add User
+@app.route("/api/users", methods=["POST"])
+def add_user():
+    data = request.json
+    name = data.get("name")
+
+    try:
+        cursor.execute("INSERT INTO users (name) VALUES (?)", (name,))
         conn.commit()
-        socketio.emit("update")
+        return jsonify({"message": "User added"})
+    except:
+        return jsonify({"error": "User already exists"}), 400
 
-    cursor.execute("SELECT user_id, name FROM users WHERE status='active'")
-    active = cursor.fetchall()
-
-    cursor.execute("SELECT user_id, name FROM users WHERE status='inactive'")
-    inactive = cursor.fetchall()
-
-    return render_template("settings.html", active=active, inactive=inactive)
 
 # ---------------- SOCKET ----------------
 @socketio.on("connect")
 def connect():
     emit("status", {"msg": "connected"})
+
 
 # ---------------- RUN ----------------
 if __name__ == "__main__":

@@ -1,0 +1,194 @@
+# 📡 Attendance System API Documentation
+
+## 🌐 Base URL
+
+```
+http://localhost:5000
+```
+
+---
+
+# 🔥 1. Scan Fingerprint
+
+### 📌 Endpoint
+
+```
+GET /api/scan
+```
+
+### 📌 Description
+
+Scans fingerprint using the sensor and marks attendance if matched.
+
+### 📌 Response
+
+#### ✅ Success
+
+```json
+{
+  "message": "Welcome Rikky",
+  "user_id": 1,
+  "name": "Rikky",
+  "time": "10:30:25"
+}
+```
+
+#### ❌ Error
+
+```json
+{
+  "error": "Fingerprint not found"
+}
+```
+
+---
+
+# 📊 2. Get Attendance Records
+
+### 📌 Endpoint
+
+```
+GET /api/attendance
+```
+
+### 📌 Description
+
+Returns all attendance records.
+
+### 📌 Response
+
+```json
+[
+  {
+    "user_id": 1,
+    "name": "Rikky",
+    "date": "2026-05-07",
+    "time": "10:30:25"
+  }
+]
+```
+
+---
+
+# 👥 3. Get Users
+
+### 📌 Endpoint
+
+```
+GET /api/users
+```
+
+### 📌 Description
+
+Returns all registered users.
+
+### 📌 Response
+
+```json
+[
+  {
+    "user_id": 1,
+    "name": "Rikky",
+    "status": "active"
+  }
+]
+```
+
+---
+
+# ➕ 4. Add User
+
+### 📌 Endpoint
+
+```
+POST /api/users
+```
+
+### 📌 Description
+
+Adds a new user to the system.
+
+### 📌 Request Body
+
+```json
+{
+  "name": "Rikky"
+}
+```
+
+### 📌 Response
+
+#### ✅ Success
+
+```json
+{
+  "message": "User added"
+}
+```
+
+#### ❌ Error
+
+```json
+{
+  "error": "User already exists"
+}
+```
+
+---
+
+# ⚡ 5. Real-Time Updates (Socket.IO)
+
+### 📌 Event: `new_attendance`
+
+Triggered whenever new attendance is marked.
+
+### 📌 Example (Frontend)
+
+```javascript
+import { io } from "socket.io-client";
+
+const socket = io("http://localhost:5000");
+
+socket.on("new_attendance", () => {
+  console.log("Attendance updated");
+});
+```
+
+---
+
+# ⚠️ Notes
+
+* Backend must be running on port **5000**
+* CORS must be enabled in Flask:
+
+```python
+CORS(app)
+```
+
+* All responses are in **JSON format**
+* Fingerprint sensor must be connected for `/api/scan`
+
+---
+
+# 🧠 Architecture Overview
+
+```
+Frontend (Next.js)
+        ↓
+REST API (Flask)
+        ↓
+Fingerprint Sensor + SQLite DB
+        ↓
+Response → Frontend UI
+```
+
+---
+
+# 🚀 Future Improvements
+
+* Authentication (JWT)
+* Role-based access (Admin/User)
+* Duplicate attendance prevention (already partially implemented)
+* Cloud deployment (AWS / VPS)
+
+---
