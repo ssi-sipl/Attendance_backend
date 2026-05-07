@@ -186,7 +186,23 @@ def api_scan():
 # 📊 Get Attendance
 @app.route("/api/attendance", methods=["GET"])
 def api_attendance():
-    cursor.execute("SELECT user_id, name, date, time FROM attendance ORDER BY id DESC")
+    page = int(request.args.get("page", 1))
+    limit = int(request.args.get("limit", 10))
+
+    offset = (page - 1) * limit
+
+    # total count (for frontend pagination)
+    cursor.execute("SELECT COUNT(*) FROM attendance")
+    total = cursor.fetchone()[0]
+
+    # paginated data
+    cursor.execute("""
+        SELECT user_id, name, date, time 
+        FROM attendance 
+        ORDER BY id DESC 
+        LIMIT ? OFFSET ?
+    """, (limit, offset))
+
     rows = cursor.fetchall()
 
     data = []
@@ -198,13 +214,35 @@ def api_attendance():
             "time": r[3]
         })
 
-    return jsonify(data)
+    return jsonify({
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "total_pages": (total + limit - 1) // limit,
+        "data": data
+    })
 
 
 # 👥 Get Users
 @app.route("/api/users", methods=["GET"])
 def api_users():
-    cursor.execute("SELECT user_id, name, status FROM users")
+    page = int(request.args.get("page", 1))
+    limit = int(request.args.get("limit", 10))
+
+    offset = (page - 1) * limit
+
+    # total users count
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total = cursor.fetchone()[0]
+
+    # paginated users
+    cursor.execute("""
+        SELECT user_id, name, status 
+        FROM users 
+        ORDER BY user_id DESC 
+        LIMIT ? OFFSET ?
+    """, (limit, offset))
+
     rows = cursor.fetchall()
 
     users = []
@@ -215,7 +253,13 @@ def api_users():
             "status": r[2]
         })
 
-    return jsonify(users)
+    return jsonify({
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "total_pages": (total + limit - 1) // limit,
+        "data": users
+    })
 
 
 # ➕ Add User
