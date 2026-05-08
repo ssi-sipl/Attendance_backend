@@ -215,53 +215,9 @@ def mark_attendance(fid):
 @app.route("/")
 def home():
     return jsonify({
-        "success": True,
+        "status": True,
         "message": "Fingerprint Attendance API Running"
     })
-
-
-# ---------------- SCAN FINGERPRINT ----------------
-@app.route("/api/scan", methods=["GET"])
-def api_scan():
-    f = get_sensor()
-
-    if not f:
-        return jsonify({
-            "success": False,
-            "error": "Sensor not found"
-        }), 500
-
-    try:
-        print("Waiting for fingerprint...")
-
-        while not f.readImage():
-            pass
-
-        f.convertImage(0x01)
-
-        result = f.searchTemplate()
-
-        fid = result[0]
-
-        if fid < 0:
-            return jsonify({
-                "success": False,
-                "error": "Fingerprint not found"
-            }), 404
-
-        result = mark_attendance(fid)
-
-        return jsonify({
-            "success": True,
-            "data": result
-        })
-
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
 
 # ---------------- GET ATTENDANCE ----------------
 @app.route("/api/attendance", methods=["GET"])
@@ -323,7 +279,7 @@ def api_attendance():
             })
 
         return jsonify({
-            "success": True,
+            "status": True,
             "page": page,
             "limit": limit,
             "total": total,
@@ -333,8 +289,8 @@ def api_attendance():
 
     except Exception as e:
         return jsonify({
-            "success": False,
-            "error": str(e)
+            "status": False,
+            "message": Internal server error
         }), 500
 
 
@@ -400,7 +356,7 @@ def api_users():
             })
 
         return jsonify({
-            "success": True,
+            "status": True,
             "page": page,
             "limit": limit,
             "total": total,
@@ -410,66 +366,110 @@ def api_users():
 
     except Exception as e:
         return jsonify({
-            "success": False,
-            "error": str(e)
+            "status": False,
+            "message": Internal server error
         }), 500
 
 
-# ---------------- ADD USER ----------------
-@app.route("/api/users", methods=["POST"])
-def add_user():
+# ---------------- Enroll User ----------------
+@app.route("/api/enrollment", methods=["POST"])
+def enrollment():
     try:
         data = request.json
+        mode = data.get("mode")
 
-        name = data.get("name")
+        # ================= STEP 1: START ENROLLMENT =================
+        if mode == "start":
+            name = data.get("name")
 
-        if not name:
+            if not name:
+                return jsonify({
+                    "success": False,
+                    "error": "Name is required"
+                }), 400
+
+            # create user first
+            cursor.execute(
+                "INSERT INTO users (name) VALUES (?)",
+                (name,)
+            )
+            conn.commit()
+
+            user_id = cursor.lastrowid
+
+            return jsonify({
+                "success": True,
+                "message": "User created. Please scan fingerprint.",
+                "user_id": user_id
+            })
+
+        # ================= STEP 2: SCAN + ENROLL FINGERPRINT =================
+        elif mode == "scan":
+            user_id = data.get("user_id")
+
+            if not user_id:
+                return jsonify({
+                    "success": False,
+                    "error": "user_id required"
+                }), 400
+
+            f = get_sensor()
+
+            if not f:
+                return jsonify({
+                    "success": False,
+                    "error": "Sensor not found"
+                }), 500
+
+            # Wait for finger
+            while not f.readImage():
+                pass
+
+            f.convertImage(0x01)
+
+            # Check duplicate fingerprint
+            if f.searchTemplate()[0] >= 0:
+                return jsonify({
+                    "success": False,
+                    "error": "Fingerprint already exists"
+                }), 409
+
+            time.sleep(2)
+
+            # Second scan (verification)
+            while not f.readImage():
+                pass
+
+            f.convertImage(0x02)
+
+            if f.compareCharacteristics() == 0:
+                return jsonify({
+                    "success": False,
+                    "error": "Fingerprints do not match"
+                }), 400
+
+            f.createTemplate()
+            fid = f.storeTemplate()
+
+            # Save fingerprint mapping
+            cursor.execute(
+                "INSERT INTO fingerprints (finger_id, user_id) VALUES (?, ?)",
+                (fid, user_id)
+            )
+
+            conn.commit()
+
+            return jsonify({
+                "success": True,
+                "message": "Enrollment completed successfully"
+            })
+
+        # ================= INVALID =================
+        else:
             return jsonify({
                 "success": False,
-                "error": "Name is required"
+                "error": "Invalid mode. Use start or scan"
             }), 400
-
-        cursor.execute(
-            "INSERT INTO users (name) VALUES (?)",
-            (name,)
-        )
-
-        conn.commit()
-
-        return jsonify({
-            "success": True,
-            "message": "User added successfully"
-        })
-
-    except sqlite3.IntegrityError:
-        return jsonify({
-            "success": False,
-            "error": "User already exists"
-        }), 400
-
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-
-# ---------------- DELETE USER ----------------
-@app.route("/api/users/<int:user_id>", methods=["DELETE"])
-def delete_user(user_id):
-    try:
-        success = delete_all(user_id)
-
-        if not success:
-            return jsonify({
-                "success": False,
-                "error": "Failed to delete user"
-            }), 500
-
-        return jsonify({
-            "success": True,
-            "message": "User deleted successfully"
-        })
 
     except Exception as e:
         return jsonify({
