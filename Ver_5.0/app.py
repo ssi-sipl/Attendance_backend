@@ -384,7 +384,7 @@ def enrollment():
 
             if not name:
                 return jsonify({
-                    "success": False,
+                    "status": False,
                     "error": "Name is required"
                 }), 400
 
@@ -398,7 +398,7 @@ def enrollment():
             user_id = cursor.lastrowid
 
             return jsonify({
-                "success": True,
+                "status": True,
                 "message": "User created. Please scan fingerprint.",
                 "user_id": user_id
             })
@@ -409,16 +409,18 @@ def enrollment():
 
             if not user_id:
                 return jsonify({
-                    "success": False,
-                    "error": "user_id required"
+                    "status": False,
+                    "message": "user_id required",
+                    "data":{}
                 }), 400
 
             f = get_sensor()
 
             if not f:
                 return jsonify({
-                    "success": False,
-                    "error": "Sensor not found"
+                    "status": False,
+                    "message": "Sensor not found",
+                    "data":{}
                 }), 500
 
             # Wait for finger
@@ -430,8 +432,9 @@ def enrollment():
             # Check duplicate fingerprint
             if f.searchTemplate()[0] >= 0:
                 return jsonify({
-                    "success": False,
-                    "error": "Fingerprint already exists"
+                    "status": False,
+                    "message": "Fingerprint already exists",
+                    "data":{}
                 }), 409
 
             time.sleep(2)
@@ -444,8 +447,9 @@ def enrollment():
 
             if f.compareCharacteristics() == 0:
                 return jsonify({
-                    "success": False,
-                    "error": "Fingerprints do not match"
+                    "status": False,
+                    "message": "Fingerprints do not match",
+                    "data":{}
                 }), 400
 
             f.createTemplate()
@@ -460,21 +464,22 @@ def enrollment():
             conn.commit()
 
             return jsonify({
-                "success": True,
+                "status": True,
                 "message": "Enrollment completed successfully"
             })
 
         # ================= INVALID =================
         else:
             return jsonify({
-                "success": False,
+                "status": False,
                 "error": "Invalid mode. Use start or scan"
             }), 400
 
     except Exception as e:
         return jsonify({
-            "success": False,
-            "error": str(e)
+            "status": False,
+            "message":Internal Server error,
+            "data":{}
         }), 500
 
 
