@@ -290,7 +290,8 @@ def api_attendance():
     except Exception as e:
         return jsonify({
             "status": False,
-            "message": Internal server error
+            "message": "Internal server error",
+            "data":{}
         }), 500
 
 
@@ -367,122 +368,100 @@ def api_users():
     except Exception as e:
         return jsonify({
             "status": False,
-            "message": Internal server error
-        }), 500
-
-
-# ---------------- Enroll User ----------------
-@app.route("/api/enrollment", methods=["POST"])
-def enrollment():
-    try:
-        data = request.json
-        mode = data.get("mode")
-
-        # ================= STEP 1: START ENROLLMENT =================
-        if mode == "start":
-            name = data.get("name")
-
-            if not name:
-                return jsonify({
-                    "status": False,
-                    "error": "Name is required"
-                }), 400
-
-            # create user first
-            cursor.execute(
-                "INSERT INTO users (name) VALUES (?)",
-                (name,)
-            )
-            conn.commit()
-
-            user_id = cursor.lastrowid
-
-            return jsonify({
-                "status": True,
-                "message": "User created. Please scan fingerprint.",
-                "user_id": user_id
-            })
-
-        # ================= STEP 2: SCAN + ENROLL FINGERPRINT =================
-        elif mode == "scan":
-            user_id = data.get("user_id")
-
-            if not user_id:
-                return jsonify({
-                    "status": False,
-                    "message": "user_id required",
-                    "data":{}
-                }), 400
-
-            f = get_sensor()
-
-            if not f:
-                return jsonify({
-                    "status": False,
-                    "message": "Sensor not found",
-                    "data":{}
-                }), 500
-
-            # Wait for finger
-            while not f.readImage():
-                pass
-
-            f.convertImage(0x01)
-
-            # Check duplicate fingerprint
-            if f.searchTemplate()[0] >= 0:
-                return jsonify({
-                    "status": False,
-                    "message": "Fingerprint already exists",
-                    "data":{}
-                }), 409
-
-            time.sleep(2)
-
-            # Second scan (verification)
-            while not f.readImage():
-                pass
-
-            f.convertImage(0x02)
-
-            if f.compareCharacteristics() == 0:
-                return jsonify({
-                    "status": False,
-                    "message": "Fingerprints do not match",
-                    "data":{}
-                }), 400
-
-            f.createTemplate()
-            fid = f.storeTemplate()
-
-            # Save fingerprint mapping
-            cursor.execute(
-                "INSERT INTO fingerprints (finger_id, user_id) VALUES (?, ?)",
-                (fid, user_id)
-            )
-
-            conn.commit()
-
-            return jsonify({
-                "status": True,
-                "message": "Enrollment completed successfully"
-            })
-
-        # ================= INVALID =================
-        else:
-            return jsonify({
-                "status": False,
-                "error": "Invalid mode. Use start or scan"
-            }), 400
-
-    except Exception as e:
-        return jsonify({
-            "status": False,
-            "message":Internal Server error,
+            "message": "Internal server error",
             "data":{}
         }), 500
 
 
+# ---------------- Enroll User ----------------
+@app.route("/api/enroll", methods=["POST"])
+def enroll():
+    try:
+        data = request.json
+        name = data.get("name")
+
+        if not name:
+            return jsonify({
+                "status": "error",
+                "message": "Name is required",
+                "data": {}
+            }), 400
+
+        # ================= 1. SCAN FINGERPRINT FIRST =================
+        f = get_sensor()
+
+        if not f:
+            return jsonify({
+                "status": "error",
+                "message": "Sensor not found",
+                "data": {}
+            }), 500
+
+        # Wait for fingerprint
+        while not f.readImage():
+            pass
+
+        f.convertImage(0x01)
+        result = f.searchTemplate()
+
+        fid = result[0]
+
+        if fid >= 0:
+            return jsonify({
+                "status": "error",
+                "message": "Fingerprint already exists",
+                "data": {}
+            }), 409
+
+        # Second scan
+        time.sleep(2)
+
+        while not f.readImage():
+            pass
+
+        f.convertImage(0x02)
+
+        if f.compareCharacteristics() == 0:
+            return jsonify({
+                "status": "error",
+                "message": "Fingerprint mismatch",
+                "data": {}
+            }), 400
+
+        f.createTemplate()
+        finger_id = f.storeTemplate()
+
+        # ================= 2. CREATE USER =================
+        cursor.execute(
+            "INSERT INTO users (name) VALUES (?)",
+            (name,)
+        )
+
+        user_id = cursor.lastrowid
+
+        # ================= 3. SAVE MAPPING =================
+        cursor.execute(
+            "INSERT INTO fingerprints (finger_id, user_id) VALUES (?, ?)",
+            (finger_id, user_id)
+        )
+
+        conn.commit()
+
+        return jsonify({
+            "status": "success",
+            "message": "Enrollment completed successfully",
+            "data": {
+                "user_id": user_id,
+                "finger_id": finger_id
+            }
+        })
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "data": {}
+        }), 500
 # ---------------- SOCKET.IO ----------------
 @socketio.on("connect")
 def handle_connect():
