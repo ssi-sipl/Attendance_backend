@@ -2,23 +2,26 @@ import sqlite3
 import time
 from datetime import datetime
 
-from flask import Flask, render_template, redirect, request, session, jsonify
+from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 from pyfingerprint.pyfingerprint import PyFingerprint
 
+# ---------------- APP ----------------
 app = Flask(__name__)
 app.secret_key = "supersecret"
 
-# ✅ Enable CORS for Next.js
+# ✅ Enable CORS
 CORS(app)
 
+# ✅ Socket.IO
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
-# ---------------- DB ----------------
+# ---------------- DATABASE ----------------
 conn = sqlite3.connect("fingerprint.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# 👥 Users Table
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,6 +30,7 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """)
 
+# 👆 Fingerprints Table
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS fingerprints (
     finger_id INTEGER PRIMARY KEY,
@@ -34,6 +38,7 @@ CREATE TABLE IF NOT EXISTS fingerprints (
 )
 """)
 
+# 📊 Attendance Table
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS attendance (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,34 +51,48 @@ CREATE TABLE IF NOT EXISTS attendance (
 
 conn.commit()
 
-ADMIN_PASSWORD = "1234"
-
 # ---------------- SENSOR ----------------
 def get_sensor():
     try:
-        f = PyFingerprint('/dev/serial0', 57600, 0xFFFFFFFF, 0x00000000)
+        f = PyFingerprint(
+            '/dev/serial0',
+            57600,
+            0xFFFFFFFF,
+            0x00000000
+        )
+
         if not f.verifyPassword():
             return None
+
         return f
-    except:
+
+    except Exception:
         return None
 
-# ---------------- ENROLL ----------------
+
+# ---------------- ENROLL FINGERPRINT ----------------
 def enroll_fingerprint(user_id):
     f = get_sensor()
+
     if not f:
         return "Sensor not found"
 
     try:
+        print("Place finger...")
+
         while not f.readImage():
             pass
 
         f.convertImage(0x01)
 
-        if f.searchTemplate()[0] >= 0:
-            return "Already exists"
+        result = f.searchTemplate()
+
+        if result[0] >= 0:
+            return "Fingerprint already exists"
 
         time.sleep(2)
+
+        print("Place same finger again...")
 
         while not f.readImage():
             pass
@@ -81,51 +100,79 @@ def enroll_fingerprint(user_id):
         f.convertImage(0x02)
 
         if f.compareCharacteristics() == 0:
-            return "Mismatch"
+            return "Fingerprints do not match"
 
         f.createTemplate()
+
         fid = f.storeTemplate()
 
         cursor.execute(
-            "INSERT OR REPLACE INTO fingerprints VALUES (?, ?)",
+            "INSERT OR REPLACE INTO fingerprints (finger_id, user_id) VALUES (?, ?)",
             (fid, user_id)
         )
+
         conn.commit()
 
-        return "Enrolled"
+        return "Fingerprint enrolled successfully"
 
     except Exception as e:
         return str(e)
 
-# ---------------- DELETE FP ----------------
+
+# ---------------- DELETE USER + FINGERPRINT ----------------
 def delete_all(user_id):
-    cursor.execute("SELECT finger_id FROM fingerprints WHERE user_id=?", (user_id,))
-    rows = cursor.fetchall()
+    try:
+        cursor.execute(
+            "SELECT finger_id FROM fingerprints WHERE user_id=?",
+            (user_id,)
+        )
 
-    f = get_sensor()
+        rows = cursor.fetchall()
 
-    for (fid,) in rows:
-        try:
-            if f:
-                f.deleteTemplate(fid)
-        except:
-            pass
+        f = get_sensor()
 
-    cursor.execute("DELETE FROM fingerprints WHERE user_id=?", (user_id,))
-    cursor.execute("DELETE FROM attendance WHERE user_id=?", (user_id,))
-    cursor.execute("DELETE FROM users WHERE user_id=?", (user_id,))
-    conn.commit()
+        for (fid,) in rows:
+            try:
+                if f:
+                    f.deleteTemplate(fid)
+            except:
+                pass
 
-# ---------------- ATTENDANCE ----------------
+        cursor.execute(
+            "DELETE FROM fingerprints WHERE user_id=?",
+            (user_id,)
+        )
+
+        cursor.execute(
+            "DELETE FROM attendance WHERE user_id=?",
+            (user_id,)
+        )
+
+        cursor.execute(
+            "DELETE FROM users WHERE user_id=?",
+            (user_id,)
+        )
+
+        conn.commit()
+
+        return True
+
+    except Exception:
+        return False
+
+
+# ---------------- MARK ATTENDANCE ----------------
 def mark_attendance(fid):
     cursor.execute("""
         SELECT users.user_id, users.name, users.status
         FROM users
-        JOIN fingerprints ON users.user_id = fingerprints.user_id
+        JOIN fingerprints
+        ON users.user_id = fingerprints.user_id
         WHERE fingerprints.finger_id=?
     """, (fid,))
 
     user = cursor.fetchone()
+
     if not user:
         return {"error": "User not found"}
 
@@ -136,18 +183,24 @@ def mark_attendance(fid):
 
     today = datetime.now().strftime("%Y-%m-%d")
 
-    cursor.execute("SELECT * FROM attendance WHERE user_id=? AND date=?", (uid, today))
+    cursor.execute(
+        "SELECT * FROM attendance WHERE user_id=? AND date=?",
+        (uid, today)
+    )
+
     if cursor.fetchone():
-        return {"message": "Already marked"}
+        return {"message": "Attendance already marked"}
 
     now = datetime.now().strftime("%H:%M:%S")
 
-    cursor.execute(
-        "INSERT INTO attendance (user_id, name, date, time) VALUES (?, ?, ?, ?)",
-        (uid, name, today, now)
-    )
+    cursor.execute("""
+        INSERT INTO attendance (user_id, name, date, time)
+        VALUES (?, ?, ?, ?)
+    """, (uid, name, today, now))
 
     conn.commit()
+
+    # 🔥 Realtime update
     socketio.emit("new_attendance")
 
     return {
@@ -157,165 +210,287 @@ def mark_attendance(fid):
         "time": now
     }
 
-# ---------------- API ROUTES ----------------
 
-# 🔥 Scan Fingerprint
+# ---------------- HOME ROUTE ----------------
+@app.route("/")
+def home():
+    return jsonify({
+        "success": True,
+        "message": "Fingerprint Attendance API Running"
+    })
+
+
+# ---------------- SCAN FINGERPRINT ----------------
 @app.route("/api/scan", methods=["GET"])
 def api_scan():
     f = get_sensor()
+
     if not f:
-        return jsonify({"error": "Sensor not found"}), 500
+        return jsonify({
+            "success": False,
+            "error": "Sensor not found"
+        }), 500
 
     try:
+        print("Waiting for fingerprint...")
+
         while not f.readImage():
             pass
 
         f.convertImage(0x01)
-        fid = f.searchTemplate()[0]
+
+        result = f.searchTemplate()
+
+        fid = result[0]
 
         if fid < 0:
-            return jsonify({"error": "Fingerprint not found"}), 404
+            return jsonify({
+                "success": False,
+                "error": "Fingerprint not found"
+            }), 404
 
         result = mark_attendance(fid)
-        return jsonify(result)
+
+        return jsonify({
+            "success": True,
+            "data": result
+        })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
-# 📊 Get Attendance
+# ---------------- GET ATTENDANCE ----------------
 @app.route("/api/attendance", methods=["GET"])
 def api_attendance():
-    page = int(request.args.get("page", 1))
-    limit = int(request.args.get("limit", 10))
+    try:
+        page = int(request.args.get("page", 1))
+        limit = int(request.args.get("limit", 10))
 
-    user_id = request.args.get("user_id")
-    date = request.args.get("date")
+        user_id = request.args.get("user_id")
+        date = request.args.get("date")
 
-    offset = (page - 1) * limit
+        offset = (page - 1) * limit
 
-    # 🔥 BASE QUERY (NO pagination yet)
-    base_query = "FROM attendance WHERE 1=1"
-    params = []
+        # 🔥 Base Query
+        base_query = "FROM attendance WHERE 1=1"
+        params = []
 
-    # 👤 Filter by employee id
-    if user_id:
-        base_query += " AND user_id = ?"
-        params.append(user_id)
+        # 👤 Filter by User ID
+        if user_id:
+            base_query += " AND user_id = ?"
+            params.append(user_id)
 
-    # 📅 Filter by date
-    if date:
-        base_query += " AND date = ?"
-        params.append(date)
+        # 📅 Filter by Date
+        if date:
+            base_query += " AND date = ?"
+            params.append(date)
 
-    # 🔢 TOTAL (filtered count)
-    cursor.execute(f"SELECT COUNT(*) {base_query}", params)
-    total = cursor.fetchone()[0]
+        # 🔢 Total Count
+        cursor.execute(
+            f"SELECT COUNT(*) {base_query}",
+            params
+        )
 
-    # 📄 FINAL DATA (filtered + paginated)
-    final_query = f"""
-        SELECT user_id, name, date, time 
-        {base_query}
-        ORDER BY id DESC
-        LIMIT ? OFFSET ?
-    """
+        total = cursor.fetchone()[0]
 
-    cursor.execute(final_query, params + [limit, offset])
-    rows = cursor.fetchall()
+        # 📄 Final Query
+        final_query = f"""
+            SELECT user_id, name, date, time
+            {base_query}
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+        """
 
-    data = []
-    for r in rows:
-        data.append({
-            "user_id": r[0],
-            "name": r[1],
-            "date": r[2],
-            "time": r[3]
+        cursor.execute(
+            final_query,
+            params + [limit, offset]
+        )
+
+        rows = cursor.fetchall()
+
+        data = []
+
+        for r in rows:
+            data.append({
+                "user_id": r[0],
+                "name": r[1],
+                "date": r[2],
+                "time": r[3]
+            })
+
+        return jsonify({
+            "success": True,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "total_pages": (total + limit - 1) // limit,
+            "data": data
         })
 
-    return jsonify({
-        "page": page,
-        "limit": limit,
-        "total": total,               # filtered total
-        "total_pages": (total + limit - 1) // limit,
-        "data": data
-    })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
-# 👥 Get Users
+# ---------------- GET USERS ----------------
 @app.route("/api/users", methods=["GET"])
 def api_users():
-    page = int(request.args.get("page", 1))
-    limit = int(request.args.get("limit", 10))
+    try:
+        page = int(request.args.get("page", 1))
+        limit = int(request.args.get("limit", 10))
 
-    search = request.args.get("search", "")   # name ya id search
-    status = request.args.get("status", "")   # active/inactive
+        search = request.args.get("search", "")
+        status = request.args.get("status", "")
 
-    offset = (page - 1) * limit
+        offset = (page - 1) * limit
 
-    # 🔥 BASE QUERY
-    base_query = "FROM users WHERE 1=1"
-    params = []
+        # 🔥 Base Query
+        base_query = "FROM users WHERE 1=1"
+        params = []
 
-    # 🔍 Search by name or user_id
-    if search:
-        base_query += " AND (name LIKE ? OR user_id LIKE ?)"
-        params.extend([f"%{search}%", f"%{search}%"])
+        # 🔍 Search
+        if search:
+            base_query += " AND (name LIKE ? OR user_id LIKE ?)"
+            params.extend([
+                f"%{search}%",
+                f"%{search}%"
+            ])
 
-    # 🟢 Filter by status
-    if status:
-        base_query += " AND status = ?"
-        params.append(status)
+        # 🟢 Status Filter
+        if status:
+            base_query += " AND status = ?"
+            params.append(status)
 
-    # 🔢 TOTAL (filtered count)
-    cursor.execute(f"SELECT COUNT(*) {base_query}", params)
-    total = cursor.fetchone()[0]
+        # 🔢 Total Count
+        cursor.execute(
+            f"SELECT COUNT(*) {base_query}",
+            params
+        )
 
-    # 📄 FINAL DATA (filtered + paginated)
-    final_query = f"""
-        SELECT user_id, name, status
-        {base_query}
-        ORDER BY user_id DESC
-        LIMIT ? OFFSET ?
-    """
+        total = cursor.fetchone()[0]
 
-    cursor.execute(final_query, params + [limit, offset])
-    rows = cursor.fetchall()
+        # 📄 Final Query
+        final_query = f"""
+            SELECT user_id, name, status
+            {base_query}
+            ORDER BY user_id DESC
+            LIMIT ? OFFSET ?
+        """
 
-    users = []
-    for r in rows:
-        users.append({
-            "user_id": r[0],
-            "name": r[1],
-            "status": r[2]
+        cursor.execute(
+            final_query,
+            params + [limit, offset]
+        )
+
+        rows = cursor.fetchall()
+
+        users = []
+
+        for r in rows:
+            users.append({
+                "user_id": r[0],
+                "name": r[1],
+                "status": r[2]
+            })
+
+        return jsonify({
+            "success": True,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "total_pages": (total + limit - 1) // limit,
+            "data": users
         })
 
-    return jsonify({
-        "page": page,
-        "limit": limit,
-        "total": total,
-        "total_pages": (total + limit - 1) // limit,
-        "data": users
-    })
-# ➕ Add User
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+# ---------------- ADD USER ----------------
 @app.route("/api/users", methods=["POST"])
 def add_user():
-    data = request.json
-    name = data.get("name")
-
     try:
-        cursor.execute("INSERT INTO users (name) VALUES (?)", (name,))
+        data = request.json
+
+        name = data.get("name")
+
+        if not name:
+            return jsonify({
+                "success": False,
+                "error": "Name is required"
+            }), 400
+
+        cursor.execute(
+            "INSERT INTO users (name) VALUES (?)",
+            (name,)
+        )
+
         conn.commit()
-        return jsonify({"message": "User added"})
-    except:
-        return jsonify({"error": "User already exists"}), 400
+
+        return jsonify({
+            "success": True,
+            "message": "User added successfully"
+        })
+
+    except sqlite3.IntegrityError:
+        return jsonify({
+            "success": False,
+            "error": "User already exists"
+        }), 400
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
-# ---------------- SOCKET ----------------
+# ---------------- DELETE USER ----------------
+@app.route("/api/users/<int:user_id>", methods=["DELETE"])
+def delete_user(user_id):
+    try:
+        success = delete_all(user_id)
+
+        if not success:
+            return jsonify({
+                "success": False,
+                "error": "Failed to delete user"
+            }), 500
+
+        return jsonify({
+            "success": True,
+            "message": "User deleted successfully"
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+# ---------------- SOCKET.IO ----------------
 @socketio.on("connect")
-def connect():
-    emit("status", {"msg": "connected"})
+def handle_connect():
+    emit("status", {
+        "message": "Socket connected"
+    })
 
 
-# ---------------- RUN ----------------
+# ---------------- RUN SERVER ----------------
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True)
+    socketio.run(
+        app,
+        host="0.0.0.0",
+        port=5000,
+        debug=True
+    )
